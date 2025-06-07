@@ -1,15 +1,17 @@
-# 📄 PDF Summarizer with Gemini Vision 🌟
+# 📄 PDF Page-by-Page Summarizer with Gemini Vision
 
 This app:
-✅ Uploads a PDF  
-✅ Summarizes each page using Google Gemini Vision (Generative AI)  
-✅ Displays summaries in a simple Streamlit web app  
-
+- 📝 Uploads a PDF
+- 📖 Extracts and summarizes each page
+- 💡 Uses Google Gemini Vision AI
+- 🌐 Built using Streamlit
 ---
 
 ## 🚀 How to Run Locally
 
-1️⃣ Clone the repo:
 ```bash
 git clone https://github.com/yourusername/pdf-summarizer-gemini.git
 cd pdf-summarizer-gemini
+pip install -r requirements.txt
+export GOOGLE_API_KEY=your-api-key
+streamlit run app.py
