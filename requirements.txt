@@ -1,0 +1,4 @@
+streamlit
+google-generativeai
+PyMuPDF
+# trigger redeploy
