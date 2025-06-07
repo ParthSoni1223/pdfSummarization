@@ -13,11 +13,7 @@ if uploaded_file:
     with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.read())
 
-    api_key = os.getenv("GOOGLE_API_KEY", st.secrets.get("GOOGLE_API_KEY", ""))
-    if not api_key:
-        st.error("❌ Google API Key not found. Set it as env variable or Streamlit secret.")
-    else:
-        genai.configure(api_key=api_key)
+        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         model = genai.GenerativeModel("gemini-pro")
         
         doc = fitz.open("temp.pdf")
