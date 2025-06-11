@@ -14,7 +14,7 @@ if uploaded_file:
         f.write(uploaded_file.read())
 
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel(model_name="models/gemini-pro")
         
         doc = fitz.open("temp.pdf")
         st.success(f"✅ Uploaded PDF with {len(doc)} pages")
