@@ -1,3 +1,8 @@
 streamlit
-google-generativeai
+requests
+PyPDF2
+pillow
+python-dotenv
+streamlit-javascript
 PyMuPDF
+aspose.slides
