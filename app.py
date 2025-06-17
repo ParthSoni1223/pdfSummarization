@@ -51,7 +51,7 @@ def pdf_page_to_image(pdf_bytes, page_number):
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc.load_page(page_number)
-        pix = page.get_pixmap(dpi=150)
+        pix = page.get_pixmap(dpi=120)  # Reduced DPI for smaller display
         image = Image.open(BytesIO(pix.tobytes("png")))
         doc.close()
         return image
@@ -61,9 +61,6 @@ def pdf_page_to_image(pdf_bytes, page_number):
 
 # Enhanced subject-specific summary prompt generator
 def generate_summary_prompt(subject):
-    subject_lower = subject.lower().strip()
-    
-    # Create a dynamic, summary-focused prompt
     summary_prompt = f"""You are an experienced, excellent and great {subject} teacher who is loved by all students because you make {subject} incredibly easy to understand. You have a special talent for creating clear, simple summaries that help students grasp even the most complex {subject} concepts.
 
 Your teaching approach:
@@ -87,6 +84,32 @@ Start directly with your summary - no introduction needed."""
     
     return summary_prompt
 
+# Generate subject-specific motivational tips
+def generate_subject_tips(subject):
+    tips_prompts = {
+        "mathematics": f"Hey there, future mathematician! 🔢 {subject} is like solving puzzles - each problem teaches you to think logically and systematically. Remember, every mathematician started exactly where you are now. Don't worry if some concepts seem tricky at first; that's completely normal! The key is practice and patience. I've seen thousands of students master {subject}, and you're no different. Take it one step at a time, celebrate small victories, and soon you'll be amazed at how much you've learned. You've got this! 💪",
+        
+        "physics": f"Welcome to the amazing world of Physics! 🌟 You're about to discover how the universe works - from tiny atoms to massive galaxies! Physics might seem challenging, but remember, you use physics every day without realizing it. Every great physicist started with curiosity, just like you. Don't get discouraged by complex equations; focus on understanding the concepts first. I believe in you completely! With consistent effort and the right guidance, you'll master physics and maybe even discover something new about our world! 🚀",
+        
+        "chemistry": f"Get ready to become a chemistry wizard! ⚗️ Chemistry is everywhere around us - in the food we eat, the air we breathe, and even in our bodies! I know it can seem overwhelming with all those formulas and reactions, but trust me, once you start connecting the dots, it becomes incredibly exciting. Every chemist started with basic curiosity about how things work. You have that same spark! Take your time, practice regularly, and don't hesitate to ask questions. I'm here to make chemistry as clear and fun as possible! 🧪✨",
+        
+        "biology": f"Welcome to the fascinating world of life science! 🌱 Biology is the study of YOU and everything living around you - how amazing is that? From tiny cells to complex ecosystems, you're about to explore the incredible mechanisms of life. Biology might have lots of terms to remember, but don't worry - I'll help you understand each concept step by step. Remember, every famous biologist started with wonder about living things, just like you. Stay curious, be patient with yourself, and enjoy this incredible journey of discovery! 🔬🦋",
+        
+        "computer science": f"Welcome to the digital age, future programmer! 💻 Computer Science is like learning a new language that lets you create amazing things - apps, games, websites, and even AI! Don't worry if coding seems confusing at first; every expert programmer started with 'Hello World' just like you will. The beauty of programming is that there's always a logical solution to every problem. Be patient, practice regularly, and don't be afraid to make mistakes - they're how we learn! You're entering one of the most exciting fields in the world. Let's code your future together! 🚀👨‍💻",
+        
+        "history": f"Time to travel through time, young historian! 🏛️ History isn't just dates and events - it's incredible stories of real people who shaped our world! Every historical figure you'll study was once a person with dreams, fears, and challenges, just like you. Understanding history helps you understand the present and shape the future. Don't worry about memorizing everything at once; focus on understanding the connections and stories. I promise to make history come alive for you! Remember, you're not just learning about the past - you're preparing to make history yourself! 📚⏳"
+    }
+    
+    # Default tip for any subject not specifically listed
+    default_tip = f"Hello, brilliant student! 🌟 You've chosen to study {subject}, and that shows your dedication to learning! Every expert in {subject} started exactly where you are right now - with curiosity and determination. Don't worry if some concepts seem challenging; that's completely normal and part of the learning process. I'm here to break down every complex idea into simple, understandable pieces. Remember, there's no such thing as a 'stupid question' in my classroom. Take your time, be patient with yourself, and celebrate every small victory. You have everything it takes to master {subject}! Let's make this learning journey amazing together! 💪📚"
+    
+    subject_lower = subject.lower().strip()
+    for key in tips_prompts:
+        if key in subject_lower:
+            return tips_prompts[key]
+    
+    return default_tip
+
 # Gemini API call for summary generation
 def generate_slide_summary(image_pil, subject):
     try:
@@ -98,7 +121,7 @@ def generate_slide_summary(image_pil, subject):
         summary_prompt = generate_summary_prompt(subject)
         
         # Include previous context for better understanding
-        parts = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in st.session_state.chat_history[-4:]]  # Keep last 4 exchanges for context
+        parts = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in st.session_state.chat_history[-4:]]
         parts.append({
             "role": "user",
             "parts": [
@@ -141,108 +164,86 @@ if uploaded_file and st.session_state.subject.strip():
         pdf_bytes = uploaded_file.read()
         reader = PdfReader(BytesIO(pdf_bytes))
         num_pages = len(reader.pages)
-        
-        # Navigation controls
-        st.markdown("---")
-        nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
-        
-        with nav_col1:
-            if st.button("⬅️ Previous Page", disabled=st.session_state.current_page <= 1):
-                st.session_state.current_page = max(1, st.session_state.current_page - 1)
-                st.rerun()
-        
-        with nav_col2:
-            # Page selector dropdown
-            page_options = [f"Page {i}" for i in range(1, num_pages + 1)]
-            selected_option = st.selectbox(
-                "Select page:",
-                options=page_options,
-                index=st.session_state.current_page - 1,
-                key="page_selector"
-            )
-            selected_page = int(selected_option.split()[-1])
-            if selected_page != st.session_state.current_page:
-                st.session_state.current_page = selected_page
-                st.rerun()
-        
-        with nav_col3:
-            if st.button("Next Page ➡️", disabled=st.session_state.current_page >= num_pages):
-                st.session_state.current_page = min(num_pages, st.session_state.current_page + 1)
-                st.rerun()
-        
-        # Progress bar
-        progress = st.session_state.current_page / num_pages
-        st.progress(progress, text=f"Progress: {st.session_state.current_page}/{num_pages} pages ({progress:.1%} complete)")
-        
-        st.markdown("---")
-        
-        # Main content area
-        col1, col2 = st.columns([1, 1])
+
+        # Dropdown (updates current_page) - like original
+        page_options = [f"Slide {i}" for i in range(1, num_pages + 1)]
+        selected_option = st.selectbox(
+            "Go to slide:",
+            options=page_options,
+            index=st.session_state.current_page - 1
+        )
+        selected_page = int(selected_option.split()[-1])
+        st.session_state.current_page = selected_page
+
+        # Show PDF and explanation - like original layout
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader(f"📄 {st.session_state.subject} - Page {st.session_state.current_page}")
-            
-            # Convert and display PDF page
-            image = pdf_page_to_image(pdf_bytes, st.session_state.current_page - 1)
+            st.subheader(f"📄 Slide {selected_page}")
+            image = pdf_page_to_image(pdf_bytes, selected_page - 1)
             if image:
-                st.image(image, use_container_width=True, caption=f"Page {st.session_state.current_page}")
+                st.image(image, use_container_width=True)
             else:
-                st.error("Could not display this page. Please try another page.")
-        
+                st.error("Could not display this page.")
+                
+            # Navigation buttons below image - like original
+            nav_col1, nav_col2, nav_col3 = st.columns(3)
+            with nav_col1:
+                if st.button("⬅️ Previous", disabled=selected_page <= 1):
+                    st.session_state.current_page = max(1, selected_page - 1)
+                    st.rerun()
+            with nav_col2:
+                st.write(f"Page {selected_page} of {num_pages}")
+            with nav_col3:
+                if st.button("Next ➡️", disabled=selected_page >= num_pages):
+                    st.session_state.current_page = min(num_pages, selected_page + 1)
+                    st.rerun()
+
         with col2:
             st.subheader(f"📝 Easy {st.session_state.subject} Summary")
             
-            # Generate summary button
-            if st.button(f"🔍 Get Summary for Page {st.session_state.current_page}", type="primary", use_container_width=True):
-                if image:
-                    with st.spinner(f"Creating an easy-to-understand {st.session_state.subject} summary..."):
-                        summary = generate_slide_summary(image, st.session_state.subject)
-                    
-                    # Display summary in a nice container
-                    st.markdown(
-                        f"""
-                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2px; border-radius: 15px; margin: 10px 0;">
-                            <div style="background-color: white; padding: 20px; border-radius: 13px; color: #333; font-size: 16px; line-height: 1.8;">
-                                <div style="font-weight: bold; color: #667eea; margin-bottom: 15px; font-size: 18px;">
-                                    📚 {st.session_state.subject} Summary - Page {st.session_state.current_page}
-                                </div>
-                                <div style="border-left: 4px solid #667eea; padding-left: 15px;">
-                                    {summary.replace('\n', '<br>')}
-                                </div>
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                    
-                    # Add to chat history for context
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": f"This was page {st.session_state.current_page} from my {st.session_state.subject} study material. Please provide an easy summary."
-                    })
-                    
-                    # Download summary option
-                    st.download_button(
-                        label="💾 Download Summary",
-                        data=f"Page {st.session_state.current_page} - {st.session_state.subject} Summary\n\n{summary}",
-                        file_name=f"{st.session_state.subject}_Page_{st.session_state.current_page}_Summary.txt",
-                        mime="text/plain"
-                    )
-                else:
-                    st.error("Cannot generate summary - page could not be loaded.")
-        
-        # Study tips section
+            # Auto-generate summary like original (no button click needed)
+            if image:
+                with st.spinner(f"Creating an easy-to-understand {st.session_state.subject} summary..."):
+                    summary = generate_slide_summary(image, st.session_state.subject)
+                
+                # Display summary in styled container
+                st.markdown(
+                    f"""
+                    <div style="background-color:#f0f8ff;padding:1.5rem;border-radius:15px;border-left:5px solid #4CAF50; color:#2c3e50; font-size:16px; line-height:1.6;">
+                    <div style="font-weight:bold; color:#2c5282; margin-bottom:10px;">📚 {st.session_state.subject} Summary:</div>
+                    {summary.replace(chr(10), '<br>')}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+                # Add to chat history for context
+                st.session_state.chat_history.append({
+                    "role": "user",
+                    "content": f"This was slide {selected_page} from my {st.session_state.subject} study material. Please provide an easy summary."
+                })
+            else:
+                st.error("Cannot generate summary - page could not be loaded.")
+
+        # Progress bar below main content - like original
         st.markdown("---")
+        progress = selected_page / num_pages
+        st.progress(progress, text=f"Study Progress: {selected_page}/{num_pages} slides ({progress:.1%})")
+        
+        # Subject-specific motivational tips from experienced teacher
+        motivational_tip = generate_subject_tips(st.session_state.subject)
         st.markdown(
             f"""
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745;">
-                <h4 style="color: #28a745; margin-top: 0;">📚 Study Tips for {st.session_state.subject}</h4>
-                <ul style="margin-bottom: 0;">
-                    <li><strong>Take it slow:</strong> Read each summary carefully and make sure you understand before moving to the next page</li>
-                    <li><strong>Make notes:</strong> Write down key points from each summary in your own words</li>
-                    <li><strong>Review regularly:</strong> Come back to difficult pages and re-read the summaries</li>
-                    <li><strong>Ask questions:</strong> If something is unclear, try getting the summary again or ask your teacher</li>
-                </ul>
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2px; border-radius: 15px; margin: 20px 0;">
+                <div style="background-color: white; padding: 20px; border-radius: 13px; color: #333; font-size: 16px; line-height: 1.7;">
+                    <div style="font-weight: bold; color: #667eea; margin-bottom: 15px; font-size: 18px;">
+                        💪 Message from Your {st.session_state.subject} Teacher
+                    </div>
+                    <div style="font-style: italic; color: #555;">
+                        {motivational_tip}
+                    </div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True
@@ -258,7 +259,7 @@ st.markdown(
     """
     <div style="text-align: center; color: #666; font-size: 14px;">
         <p>📚 Study Assistant - Making learning easy and fun! 🎓</p>
-        <p><small>Navigate through pages using the buttons above and get easy summaries for better understanding.</small></p>
+        <p><small>Navigate through slides and get automatic easy summaries for better understanding.</small></p>
     </div>
     """,
     unsafe_allow_html=True
