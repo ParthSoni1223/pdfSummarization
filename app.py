@@ -13,7 +13,7 @@ load_dotenv()
 GEMINI_API_KEY = "AIzaSyDktmzdFPVFY_7ph7-aP_AlQ4Huy4Nnn6I"  # Replace with your actual API key
 
 st.set_page_config(layout="wide", page_title="📚 Study Assistant", page_icon="📚")
-st.title("📚 Study Assistant: Easy PDF Summaries")
+st.title("📚 Study Assistant: Easy PDF Summaries & Topic Explanations")
 
 # Session state init
 if "chat_history" not in st.session_state:
@@ -22,6 +22,8 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = 1
 if "subject" not in st.session_state:
     st.session_state.subject = ""
+if "study_mode" not in st.session_state:
+    st.session_state.study_mode = ""
 
 # Subject input section
 st.markdown("### 📖 What subject are you studying today?")
@@ -29,22 +31,33 @@ subject_input = st.text_input(
     "Enter your subject:",
     placeholder="e.g., Mathematics, Physics, Computer Science, Biology, Chemistry, History, Economics...",
     value=st.session_state.subject,
-    help="This helps me create better summaries tailored to your subject!"
+    help="This helps me create better summaries and explanations tailored to your subject!"
 )
 
 # Update session state when subject changes
 if subject_input != st.session_state.subject:
     st.session_state.subject = subject_input
-    # Reset chat history when subject changes to avoid context mixing
+    # Reset chat history and study mode when subject changes
     st.session_state.chat_history = []
+    st.session_state.study_mode = ""
 
-# Upload PDF (only show if subject is entered)
-uploaded_file = None
+# Study mode selection (only show if subject is entered)
 if st.session_state.subject.strip():
-    st.markdown(f"### 📄 Upload your **{st.session_state.subject}** PDF")
-    uploaded_file = st.file_uploader("Choose your PDF file", type=["pdf"])
+    st.markdown(f"### 🎯 How would you like to study **{st.session_state.subject}** today?")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📄 Upload PDF for Page-by-Page Summary", use_container_width=True):
+            st.session_state.study_mode = "pdf_summary"
+            st.rerun()
+    
+    with col2:
+        if st.button("🧠 Ask About Specific Topic", use_container_width=True):
+            st.session_state.study_mode = "topic_explanation"
+            st.rerun()
 else:
-    st.info("👆 Please enter your subject first to get personalized summaries!")
+    st.info("👆 Please enter your subject first to get personalized study assistance!")
 
 # Convert PDF to image
 def pdf_page_to_image(pdf_bytes, page_number):
@@ -83,6 +96,72 @@ Keep the summary concise but comprehensive - students should understand everythi
 Start directly with your summary - no introduction needed."""
     
     return summary_prompt
+
+# Topic explanation prompt generator
+def generate_topic_explanation_prompt(subject, topic):
+    topic_prompt = f"""You are a world-renowned {subject} professor and expert who has helped thousands of students excel in their college exams. You have an exceptional ability to explain even the most complex {subject} concepts in the simplest, most understandable way possible.
+
+Your expertise includes:
+- Breaking down complex {subject} theories into digestible concepts
+- Providing comprehensive coverage of topics with all essential details
+- Creating clear explanations that help students score excellently in exams
+- Using simple language while maintaining academic accuracy
+- Providing practical examples and real-world applications
+
+IMPORTANT: This explanation is for a college student preparing for exams, so it must be:
+- Comprehensive and complete (cover all important aspects)
+- Exam-focused (include key points that typically appear in tests)
+- Easy to understand (use simple language and clear explanations)
+- Well-structured (organized in a logical flow)
+
+Topic to explain: "{topic}" in {subject}
+
+Please provide a comprehensive explanation that covers:
+
+1. **Clear Definition & Introduction**
+   - What is this topic about?
+   - Why is it important in {subject}?
+
+2. **Key Concepts & Components**
+   - Break down all major concepts
+   - Explain technical terms in simple language
+   - Show relationships between different parts
+
+3. **Important Formulas & Equations** (if applicable)
+   - List all relevant formulas
+   - Explain what each variable means
+   - Provide examples of how to use them
+
+4. **Step-by-Step Processes** (if applicable)
+   - Break down any procedures or methods
+   - Provide clear, numbered steps
+   - Include tips for remembering the process
+
+5. **Practical Examples**
+   - Give 2-3 real-world examples
+   - Show how the concept applies in practice
+   - Include solved problems if relevant
+
+6. **Common Mistakes & Tips**
+   - What errors do students typically make?
+   - How to avoid these mistakes
+   - Memory tricks or mnemonics
+
+7. **Exam Focus Points**
+   - What aspects are most likely to be tested?
+   - Types of questions that might appear
+   - Key points to remember for exams
+
+8. **Visual Descriptions** (if applicable)
+   - Describe any important diagrams, charts, or graphs
+   - Explain what they show and why they're important
+   - How to interpret visual information
+
+Make your explanation so clear and comprehensive that the student will feel completely confident about this topic in their exam. Use encouraging language and make learning enjoyable!
+
+Start directly with your explanation - no introduction needed."""
+    
+    return topic_prompt
 
 # Generate subject-specific motivational tips
 def generate_subject_tips(subject):
@@ -156,102 +235,180 @@ def generate_slide_summary(image_pil, subject):
     except Exception as e:
         return f"❌ Error generating summary: {str(e)}"
 
-# Main app logic
-if uploaded_file and st.session_state.subject.strip():
-    st.success(f"✅ Great! Your {st.session_state.subject} PDF is loaded successfully!")
-    
+# Gemini API call for topic explanation
+def generate_topic_explanation(subject, topic):
     try:
-        pdf_bytes = uploaded_file.read()
-        reader = PdfReader(BytesIO(pdf_bytes))
-        num_pages = len(reader.pages)
-
-        # Dropdown (updates current_page) - like original
-        page_options = [f"Slide {i}" for i in range(1, num_pages + 1)]
-        selected_option = st.selectbox(
-            "Go to slide:",
-            options=page_options,
-            index=st.session_state.current_page - 1
+        # Generate topic explanation prompt
+        topic_prompt = generate_topic_explanation_prompt(subject, topic)
+        
+        # Include previous context for better understanding
+        parts = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in st.session_state.chat_history[-2:]]
+        parts.append({
+            "role": "user",
+            "parts": [{"text": topic_prompt}]
+        })
+        
+        response = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+            headers={"Content-Type": "application/json"},
+            json={"contents": parts},
+            timeout=45  # Longer timeout for comprehensive explanations
         )
-        selected_page = int(selected_option.split()[-1])
-        st.session_state.current_page = selected_page
-
-        # Show PDF and explanation - like original layout
-        col1, col2 = st.columns(2)
         
-        with col1:
-            st.subheader(f"📄 Slide {selected_page}")
-            image = pdf_page_to_image(pdf_bytes, selected_page - 1)
-            if image:
-                st.image(image, use_container_width=True)
-            else:
-                st.error("Could not display this page.")
-                
-            # Navigation buttons below image - like original
-            nav_col1, nav_col2, nav_col3 = st.columns(3)
-            with nav_col1:
-                if st.button("⬅️ Previous", disabled=selected_page <= 1):
-                    st.session_state.current_page = max(1, selected_page - 1)
-                    st.rerun()
-            with nav_col2:
-                st.write(f"Page {selected_page} of {num_pages}")
-            with nav_col3:
-                if st.button("Next ➡️", disabled=selected_page >= num_pages):
-                    st.session_state.current_page = min(num_pages, selected_page + 1)
-                    st.rerun()
-
-        with col2:
-            st.subheader(f"📝 Easy {st.session_state.subject} Summary")
+        if response.status_code == 200:
+            reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+            # Add to chat history
+            st.session_state.chat_history.append({"role": "user", "content": f"Explain the topic: {topic} in {subject}"})
+            st.session_state.chat_history.append({"role": "model", "content": reply})
+            return reply
+        else:
+            return f"❌ Error getting explanation: {response.status_code} - {response.text}"
             
-            # Auto-generate summary like original (no button click needed)
-            if image:
-                with st.spinner(f"Creating an easy-to-understand {st.session_state.subject} summary..."):
-                    summary = generate_slide_summary(image, st.session_state.subject)
-                
-                # Display summary in styled container
-                st.markdown(
-                    f"""
-                    <div style="background-color:#f0f8ff;padding:1.5rem;border-radius:15px;border-left:5px solid #4CAF50; color:#2c3e50; font-size:16px; line-height:1.6;">
-                    <div style="font-weight:bold; color:#2c5282; margin-bottom:10px;">📚 {st.session_state.subject} Summary:</div>
-                    {summary.replace(chr(10), '<br>')}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-                
-                # Add to chat history for context
-                st.session_state.chat_history.append({
-                    "role": "user",
-                    "content": f"This was slide {selected_page} from my {st.session_state.subject} study material. Please provide an easy summary."
-                })
-            else:
-                st.error("Cannot generate summary - page could not be loaded.")
+    except requests.exceptions.Timeout:
+        return "❌ Request timed out. The explanation might be too comprehensive. Please try again."
+    except Exception as e:
+        return f"❌ Error generating explanation: {str(e)}"
 
-        # Progress bar below main content - like original
-        st.markdown("---")
-        progress = selected_page / num_pages
-        st.progress(progress, text=f"Study Progress: {selected_page}/{num_pages} slides ({progress:.1%})")
+# PDF Summary Mode
+if st.session_state.study_mode == "pdf_summary" and st.session_state.subject.strip():
+    st.markdown(f"### 📄 Upload your **{st.session_state.subject}** PDF")
+    uploaded_file = st.file_uploader("Choose your PDF file", type=["pdf"])
+    
+    if uploaded_file:
+        st.success(f"✅ Great! Your {st.session_state.subject} PDF is loaded successfully!")
         
-        # Subject-specific motivational tips from experienced teacher
-        motivational_tip = generate_subject_tips(st.session_state.subject)
-        st.markdown(
-            f"""
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2px; border-radius: 15px; margin: 20px 0;">
-                <div style="background-color: white; padding: 20px; border-radius: 13px; color: #333; font-size: 16px; line-height: 1.7;">
-                    <div style="font-weight: bold; color: #667eea; margin-bottom: 15px; font-size: 18px;">
-                        💪 Message from Your {st.session_state.subject} Teacher
-                    </div>
-                    <div style="font-style: italic; color: #555;">
-                        {motivational_tip}
+        try:
+            pdf_bytes = uploaded_file.read()
+            reader = PdfReader(BytesIO(pdf_bytes))
+            num_pages = len(reader.pages)
+
+            # Dropdown for page selection
+            page_options = [f"Slide {i}" for i in range(1, num_pages + 1)]
+            selected_option = st.selectbox(
+                "Go to slide:",
+                options=page_options,
+                index=st.session_state.current_page - 1
+            )
+            selected_page = int(selected_option.split()[-1])
+            st.session_state.current_page = selected_page
+
+            # Show PDF and explanation
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader(f"📄 Slide {selected_page}")
+                image = pdf_page_to_image(pdf_bytes, selected_page - 1)
+                if image:
+                    st.image(image, use_container_width=True)
+                else:
+                    st.error("Could not display this page.")
+                    
+                # Navigation buttons
+                nav_col1, nav_col2, nav_col3 = st.columns(3)
+                with nav_col1:
+                    if st.button("⬅️ Previous", disabled=selected_page <= 1):
+                        st.session_state.current_page = max(1, selected_page - 1)
+                        st.rerun()
+                with nav_col2:
+                    st.write(f"Page {selected_page} of {num_pages}")
+                with nav_col3:
+                    if st.button("Next ➡️", disabled=selected_page >= num_pages):
+                        st.session_state.current_page = min(num_pages, selected_page + 1)
+                        st.rerun()
+
+            with col2:
+                st.subheader(f"📝 Easy {st.session_state.subject} Summary")
+                
+                # Auto-generate summary
+                if image:
+                    with st.spinner(f"Creating an easy-to-understand {st.session_state.subject} summary..."):
+                        summary = generate_slide_summary(image, st.session_state.subject)
+                    
+                    # Display summary in styled container
+                    st.markdown(
+                        f"""
+                        <div style="background-color:#f0f8ff;padding:1.5rem;border-radius:15px;border-left:5px solid #4CAF50; color:#2c3e50; font-size:16px; line-height:1.6;">
+                        <div style="font-weight:bold; color:#2c5282; margin-bottom:10px;">📚 {st.session_state.subject} Summary:</div>
+                        {summary.replace(chr(10), '<br>')}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.error("Cannot generate summary - page could not be loaded.")
+
+            # Progress bar
+            st.markdown("---")
+            progress = selected_page / num_pages
+            st.progress(progress, text=f"Study Progress: {selected_page}/{num_pages} slides ({progress:.1%})")
+            
+        except Exception as e:
+            st.error(f"Error processing PDF: {str(e)}")
+            st.info("Please try uploading your PDF again.")
+
+# Topic Explanation Mode
+elif st.session_state.study_mode == "topic_explanation" and st.session_state.subject.strip():
+    st.markdown(f"### 🧠 Ask About Any **{st.session_state.subject}** Topic")
+    st.markdown(f"Get comprehensive explanations perfect for your college exams!")
+    
+    # Topic input
+    topic_input = st.text_input(
+        f"What {st.session_state.subject} topic would you like me to explain?",
+        placeholder=f"e.g., Photosynthesis, Quantum Mechanics, Machine Learning, Calculus, etc.",
+        help="Enter any topic from your subject and I'll provide a complete explanation with formulas, diagrams descriptions, and exam tips!"
+    )
+    
+    if st.button("🚀 Get Comprehensive Explanation", disabled=not topic_input.strip()):
+        if topic_input.strip():
+            with st.spinner(f"Preparing a comprehensive explanation of '{topic_input}' in {st.session_state.subject}..."):
+                explanation = generate_topic_explanation(st.session_state.subject, topic_input)
+            
+            # Display explanation in styled container
+            st.markdown(
+                f"""
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 3px; border-radius: 20px; margin: 20px 0;">
+                    <div style="background-color: white; padding: 25px; border-radius: 17px; color: #333; font-size: 16px; line-height: 1.8;">
+                        <div style="font-weight: bold; color: #667eea; margin-bottom: 20px; font-size: 24px; text-align: center;">
+                            🎓 Complete Guide: {topic_input} in {st.session_state.subject}
+                        </div>
+                        <div style="color: #444; white-space: pre-line;">
+                            {explanation}
+                        </div>
                     </div>
                 </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+            # Add follow-up suggestions
+            st.markdown("### 💡 Want to learn more?")
+            st.info(f"Feel free to ask about any other {st.session_state.subject} topics! I can explain concepts, provide formulas, describe diagrams, and give you exam-focused tips.")
+
+# Show motivational tips if a study mode is selected
+if st.session_state.study_mode and st.session_state.subject.strip():
+    motivational_tip = generate_subject_tips(st.session_state.subject)
+    st.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2px; border-radius: 15px; margin: 20px 0;">
+            <div style="background-color: white; padding: 20px; border-radius: 13px; color: #333; font-size: 16px; line-height: 1.7;">
+                <div style="font-weight: bold; color: #667eea; margin-bottom: 15px; font-size: 18px;">
+                    💪 Message from Your {st.session_state.subject} Teacher
+                </div>
+                <div style="font-style: italic; color: #555;">
+                    {motivational_tip}
+                </div>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
-        
-    except Exception as e:
-        st.error(f"Error processing PDF: {str(e)}")
-        st.info("Please try uploading your PDF again.")
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+# Add option to go back to mode selection
+if st.session_state.study_mode:
+    st.markdown("---")
+    if st.button("🔄 Choose Different Study Mode"):
+        st.session_state.study_mode = ""
+        st.rerun()
 
 # Footer
 st.markdown("---")
@@ -259,7 +416,7 @@ st.markdown(
     """
     <div style="text-align: center; color: #666; font-size: 14px;">
         <p>📚 Study Assistant - Making learning easy and fun! 🎓</p>
-        <p><small>Navigate through slides and get automatic easy summaries for better understanding.</small></p>
+        <p><small>Choose between PDF summaries or comprehensive topic explanations for your college exam preparation.</small></p>
     </div>
     """,
     unsafe_allow_html=True
