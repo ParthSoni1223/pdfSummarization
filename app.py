@@ -10,7 +10,7 @@ import fitz
 
 # Load API key
 load_dotenv()
-GEMINI_API_KEY = "API-KEY"  # Replace with your actual API key
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]  # Replace with your actual API key
 
 st.set_page_config(layout="wide", page_title="📚 Study Assistant", page_icon="📚")
 st.title("📚 Study Assistant: Easy PDF Summaries & Topic Explanations")
