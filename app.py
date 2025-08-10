@@ -6,417 +6,368 @@ import base64
 import requests
 from PIL import Image
 from io import BytesIO
-import fitz
+import fitz  # PyMuPDF
+import re
+import html
 
-# Load API key
+# --- PAGE CONFIGURATION ---
+# Set page config at the very top, and only once.
+st.set_page_config(layout="wide", page_title="🎓 Study Assistant", page_icon="📚")
+
+# --- LOAD API KEY ---
+# It's good practice to handle this early on.
 load_dotenv()
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]  # Replace with your actual API key
+# Use st.secrets for deployment, but have a fallback for local development.
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
 
-st.set_page_config(layout="wide", page_title="📚 Study Assistant", page_icon="📚")
-st.title("📚 Study Assistant: Easy PDF Summaries & Topic Explanations")
+# --- SESSION STATE INITIALIZATION ---
+# A function to keep initialization clean.
+def init_session_state():
+    """Initializes session state variables if they don't exist."""
+    defaults = {
+        "chat_history": [],
+        "current_page": 0,
+        "subject": "",
+        "study_mode": "",
+        "pdf_bytes": None,
+        "num_pages": 0,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-# Session state init
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "current_page" not in st.session_state:
-    st.session_state.current_page = 1
-if "subject" not in st.session_state:
-    st.session_state.subject = ""
-if "study_mode" not in st.session_state:
-    st.session_state.study_mode = ""
+# --- PROMPT ENGINEERING ---
+# Consolidating all prompts in one area for easy management.
 
-# Subject input section
-st.markdown("### 📖 What subject are you studying today?")
-subject_input = st.text_input(
-    "Enter your subject:",
-    placeholder="e.g., Mathematics, Physics, Computer Science, Biology, Chemistry, History, Economics...",
-    value=st.session_state.subject,
-    help="This helps me create better summaries and explanations tailored to your subject!"
-)
+def get_summary_prompt(subject):
+    """Generates a subject-specific prompt for summarizing a PDF page."""
+    return f"""
+    You are a world-class {subject} educator, renowned for making complex topics simple.
+    Your task is to provide a clear, concise, and easy-to-understand summary of the provided slide image.
 
-# Update session state when subject changes
-if subject_input != st.session_state.subject:
-    st.session_state.subject = subject_input
-    # Reset chat history and study mode when subject changes
-    st.session_state.chat_history = []
-    st.session_state.study_mode = ""
+    Your summary must:
+    1.  **Main Concept:** Start with a simple, one-sentence explanation of the page's core idea.
+    2.  **Key Points:** Use bullet points to highlight the most critical information students must remember.
+    3.  **Simple Explanations:** Define any jargon or complex terms in plain language.
+    4.  **Tone:** Write in a friendly, encouraging, and supportive tone.
 
-# Study mode selection (only show if subject is entered)
-if st.session_state.subject.strip():
-    st.markdown(f"### 🎯 How would you like to study **{st.session_state.subject}** today?")
+    Analyze the image and provide the summary directly. Do not add any introductory or concluding phrases.
+    """
+
+def get_topic_explanation_prompt(subject, topic):
+    """Generates a detailed, exam-focused prompt for explaining a topic."""
+    return f"""
+    You are a distinguished {subject} professor creating an ultimate exam study guide for college students.
+    Your explanation must be comprehensive, clear, and structured for deep understanding and high exam scores.
+
+    **Topic to Explain:** "{topic}"
+
+    **Instructions:**
+    Provide a detailed explanation covering the following sections. Use markdown for formatting (bolding, lists).
+
+    ### 1. Introduction & Core Concept
+    - What is '{topic}'? Define it clearly.
+    - Why is it important in the field of {subject}?
+
+    ### 2. Key Principles & Mechanisms
+    - Break down the fundamental components or theories.
+    - Explain any technical terms in simple language.
+
+    ### 3. Important Formulas or Equations (if applicable)
+    - List the essential formulas.
+    - Briefly explain each variable.
+
+    ### 4. Step-by-Step Process or Application (if applicable)
+    - Outline any relevant processes in a numbered list.
+
+    ### 5. Practical Examples
+    - Provide 1-2 clear, real-world or hypothetical examples to illustrate the concept.
     
-    col1, col2 = st.columns(2)
+    ### 6. Visual Aid Descriptions
+    - **Crucially, where a diagram or visual would be helpful, insert a placeholder tag in the format ``.** For example: `` or ``. This helps visualize the concept.
     
-    with col1:
-        if st.button("📄 Upload PDF for Page-by-Page Summary", use_container_width=True):
-            st.session_state.study_mode = "pdf_summary"
-            st.rerun()
-    
-    with col2:
-        if st.button("🧠 Ask About Specific Topic", use_container_width=True):
-            st.session_state.study_mode = "topic_explanation"
-            st.rerun()
-else:
-    st.info("👆 Please enter your subject first to get personalized study assistance!")
+    ### 7. Exam Focus Points & Common Mistakes
+    - What are the most tested aspects of this topic?
+    - What common pitfalls should students avoid?
 
-# Convert PDF to image
-def pdf_page_to_image(pdf_bytes, page_number):
+    Structure your response logically. Start directly with the explanation.
+    """
+
+# --- API & UTILITY FUNCTIONS ---
+
+@st.cache_data(show_spinner=False)
+def generate_gemini_response(_prompt, _image_pil=None, _chat_history=None):
+    """
+    Generic function to call Gemini API. Caches the result.
+    Using _ on args tells Streamlit's caching to hash the function arguments by value.
+    """
+    if not GEMINI_API_KEY:
+        st.error("Gemini API key is not set. Please add it to your environment or Streamlit secrets.")
+        return None
+
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        headers = {"Content-Type": "application/json"}
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
+        parts = []
+        if _image_pil:
+            buffered = BytesIO()
+            _image_pil.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            parts.append({"inline_data": {"mime_type": "image/png", "data": img_base64}})
+        
+        parts.append({"text": _prompt})
+        
+        # Build contents with chat history
+        contents = []
+        if _chat_history:
+             for message in _chat_history:
+                 # Ensure correct role mapping
+                 role = "user" if message["role"] == "user" else "model"
+                 contents.append({"role": role, "parts": [{"text": message["content"]}]})
+        
+        # Add the current prompt
+        contents.append({"role": "user", "parts": parts})
+
+        response = requests.post(
+            url, headers=headers, json={"contents": contents}, timeout=60
+        )
+        response.raise_for_status()  # This will raise an HTTPError for bad responses (4xx or 5xx)
+        
+        reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return reply
+
+    except requests.exceptions.Timeout:
+        st.error("API request timed out. Please try again.")
+    except requests.exceptions.RequestException as e:
+        st.error(f"API request failed: {e}. Check your connection and API key.")
+    except (KeyError, IndexError) as e:
+        st.error(f"Failed to parse API response. The response might be empty or malformed. Details: {response.text}")
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {e}")
+    
+    return None
+
+@st.cache_data
+def get_pdf_page_image(_pdf_bytes, page_number):
+    """Converts a specific page of a PDF bytes stream to a PIL Image. Caches the result."""
+    try:
+        doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
         page = doc.load_page(page_number)
-        pix = page.get_pixmap(dpi=120)  # Reduced DPI for smaller display
+        pix = page.get_pixmap(dpi=150)  # Increased DPI slightly for better clarity
         image = Image.open(BytesIO(pix.tobytes("png")))
         doc.close()
         return image
     except Exception as e:
-        st.error(f"Error converting PDF page: {str(e)}")
+        st.error(f"Error converting PDF page {page_number + 1}: {e}")
         return None
 
-# Enhanced subject-specific summary prompt generator
-def generate_summary_prompt(subject):
-    summary_prompt = f"""You are an experienced, excellent and great {subject} teacher who is loved by all students because you make {subject} incredibly easy to understand. You have a special talent for creating clear, simple summaries that help students grasp even the most complex {subject} concepts.
-
-Your teaching approach:
-- You explain {subject} concepts in the simplest possible language
-- You break down complex {subject} terms into easy-to-understand explanations  
-- You create summaries that make students say "Oh, now I get it!"
-- You use simple examples and analogies related to {subject}
-- You focus on the key points that students need to remember
-- You make sure every student understands completely before moving on
-
-Task: Please provide an easy-to-understand summary of this {subject} slide/page. Your summary should:
-1. Explain the main concept in simple language
-2. Break down any difficult {subject} terms or vocabulary
-3. Highlight the key points students must remember
-4. Use simple examples if helpful
-5. Make it so clear that any student can understand it completely
-
-Keep the summary concise but comprehensive - students should understand everything after reading your explanation. Write in a friendly, encouraging tone that makes learning {subject} enjoyable.
-
-Start directly with your summary - no introduction needed."""
+def render_response(text):
+    """
+    Renders the Gemini response, replacing image placeholders with st.image calls.
+    This is the key to solving the image generation request.
+    """
+    # Use html.escape to prevent Markdown/HTML injection from the text itself.
+    # We will handle formatting safely.
+    safe_text = html.escape(text)
     
-    return summary_prompt
-
-# Topic explanation prompt generator
-def generate_topic_explanation_prompt(subject, topic):
-    topic_prompt = f"""You are a world-renowned {subject} professor and expert who has helped thousands of students excel in their college exams. You have an exceptional ability to explain even the most complex {subject} concepts in the simplest, most understandable way possible.
-
-Your expertise includes:
-- Breaking down complex {subject} theories into digestible concepts
-- Providing comprehensive coverage of topics with all essential details
-- Creating clear explanations that help students score excellently in exams
-- Using simple language while maintaining academic accuracy
-- Providing practical examples and real-world applications
-
-IMPORTANT: This explanation is for a college student preparing for exams, so it must be:
-- Comprehensive and complete (cover all important aspects)
-- Exam-focused (include key points that typically appear in tests)
-- Easy to understand (use simple language and clear explanations)
-- Well-structured (organized in a logical flow)
-
-Topic to explain: "{topic}" in {subject}
-
-Please provide a comprehensive explanation that covers:
-
-1. **Clear Definition & Introduction**
-   - What is this topic about?
-   - Why is it important in {subject}?
-
-2. **Key Concepts & Components**
-   - Break down all major concepts
-   - Explain technical terms in simple language
-   - Show relationships between different parts
-
-3. **Important Formulas & Equations** (if applicable)
-   - List all relevant formulas
-   - Explain what each variable means
-   - Provide examples of how to use them
-
-4. **Step-by-Step Processes** (if applicable)
-   - Break down any procedures or methods
-   - Provide clear, numbered steps
-   - Include tips for remembering the process
-
-5. **Practical Examples**
-   - Give 2-3 real-world examples
-   - Show how the concept applies in practice
-   - Include solved problems if relevant
-
-6. **Common Mistakes & Tips**
-   - What errors do students typically make?
-   - How to avoid these mistakes
-   - Memory tricks or mnemonics
-
-7. **Exam Focus Points**
-   - What aspects are most likely to be tested?
-   - Types of questions that might appear
-   - Key points to remember for exams
-
-8. **Visual Descriptions** (if applicable)
-   - Describe any important diagrams, charts, or graphs
-   - Explain what they show and why they're important
-   - How to interpret visual information
-
-Make your explanation so clear and comprehensive that the student will feel completely confident about this topic in their exam. Use encouraging language and make learning enjoyable!
-
-Start directly with your explanation - no introduction needed."""
+    # Regex to find our image tags:     image_pattern = r"\"
+    parts = re.split(image_pattern, safe_text)
     
-    return topic_prompt
-
-# Generate subject-specific motivational tips
-def generate_subject_tips(subject):
-    tips_prompts = {
-        "mathematics": f"Hey there, future mathematician! 🔢 {subject} is like solving puzzles - each problem teaches you to think logically and systematically. Remember, every mathematician started exactly where you are now. Don't worry if some concepts seem tricky at first; that's completely normal! The key is practice and patience. I've seen thousands of students master {subject}, and you're no different. Take it one step at a time, celebrate small victories, and soon you'll be amazed at how much you've learned. You've got this! 💪",
-        
-        "physics": f"Welcome to the amazing world of Physics! 🌟 You're about to discover how the universe works - from tiny atoms to massive galaxies! Physics might seem challenging, but remember, you use physics every day without realizing it. Every great physicist started with curiosity, just like you. Don't get discouraged by complex equations; focus on understanding the concepts first. I believe in you completely! With consistent effort and the right guidance, you'll master physics and maybe even discover something new about our world! 🚀",
-        
-        "chemistry": f"Get ready to become a chemistry wizard! ⚗️ Chemistry is everywhere around us - in the food we eat, the air we breathe, and even in our bodies! I know it can seem overwhelming with all those formulas and reactions, but trust me, once you start connecting the dots, it becomes incredibly exciting. Every chemist started with basic curiosity about how things work. You have that same spark! Take your time, practice regularly, and don't hesitate to ask questions. I'm here to make chemistry as clear and fun as possible! 🧪✨",
-        
-        "biology": f"Welcome to the fascinating world of life science! 🌱 Biology is the study of YOU and everything living around you - how amazing is that? From tiny cells to complex ecosystems, you're about to explore the incredible mechanisms of life. Biology might have lots of terms to remember, but don't worry - I'll help you understand each concept step by step. Remember, every famous biologist started with wonder about living things, just like you. Stay curious, be patient with yourself, and enjoy this incredible journey of discovery! 🔬🦋",
-        
-        "computer science": f"Welcome to the digital age, future programmer! 💻 Computer Science is like learning a new language that lets you create amazing things - apps, games, websites, and even AI! Don't worry if coding seems confusing at first; every expert programmer started with 'Hello World' just like you will. The beauty of programming is that there's always a logical solution to every problem. Be patient, practice regularly, and don't be afraid to make mistakes - they're how we learn! You're entering one of the most exciting fields in the world. Let's code your future together! 🚀👨‍💻",
-        
-        "history": f"Time to travel through time, young historian! 🏛️ History isn't just dates and events - it's incredible stories of real people who shaped our world! Every historical figure you'll study was once a person with dreams, fears, and challenges, just like you. Understanding history helps you understand the present and shape the future. Don't worry about memorizing everything at once; focus on understanding the connections and stories. I promise to make history come alive for you! Remember, you're not just learning about the past - you're preparing to make history yourself! 📚⏳"
-    }
-    
-    # Default tip for any subject not specifically listed
-    default_tip = f"Hello, brilliant student! 🌟 You've chosen to study {subject}, and that shows your dedication to learning! Every expert in {subject} started exactly where you are right now - with curiosity and determination. Don't worry if some concepts seem challenging; that's completely normal and part of the learning process. I'm here to break down every complex idea into simple, understandable pieces. Remember, there's no such thing as a 'stupid question' in my classroom. Take your time, be patient with yourself, and celebrate every small victory. You have everything it takes to master {subject}! Let's make this learning journey amazing together! 💪📚"
-    
-    subject_lower = subject.lower().strip()
-    for key in tips_prompts:
-        if key in subject_lower:
-            return tips_prompts[key]
-    
-    return default_tip
-
-# Gemini API call for summary generation
-def generate_slide_summary(image_pil, subject):
-    try:
-        buffered = BytesIO()
-        image_pil.save(buffered, format="PNG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode()
-
-        # Generate subject-specific summary prompt
-        summary_prompt = generate_summary_prompt(subject)
-        
-        # Include previous context for better understanding
-        parts = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in st.session_state.chat_history[-4:]]
-        parts.append({
-            "role": "user",
-            "parts": [
-                {
-                    "inline_data": {
-                        "mime_type": "image/png",
-                        "data": img_base64
-                    }
-                },
-                {
-                    "text": summary_prompt
-                }
-            ]
-        })
-        
-        response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-            headers={"Content-Type": "application/json"},
-            json={"contents": parts},
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-            st.session_state.chat_history.append({"role": "model", "content": reply})
-            return reply
-        else:
-            return f"❌ Error getting summary: {response.status_code} - {response.text}"
-            
-    except requests.exceptions.Timeout:
-        return "❌ Request timed out. Please try again."
-    except Exception as e:
-        return f"❌ Error generating summary: {str(e)}"
-
-# Gemini API call for topic explanation
-def generate_topic_explanation(subject, topic):
-    try:
-        # Generate topic explanation prompt
-        topic_prompt = generate_topic_explanation_prompt(subject, topic)
-        
-        # Include previous context for better understanding
-        parts = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in st.session_state.chat_history[-2:]]
-        parts.append({
-            "role": "user",
-            "parts": [{"text": topic_prompt}]
-        })
-        
-        response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-            headers={"Content-Type": "application/json"},
-            json={"contents": parts},
-            timeout=45  # Longer timeout for comprehensive explanations
-        )
-        
-        if response.status_code == 200:
-            reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-            # Add to chat history
-            st.session_state.chat_history.append({"role": "user", "content": f"Explain the topic: {topic} in {subject}"})
-            st.session_state.chat_history.append({"role": "model", "content": reply})
-            return reply
-        else:
-            return f"❌ Error getting explanation: {response.status_code} - {response.text}"
-            
-    except requests.exceptions.Timeout:
-        return "❌ Request timed out. The explanation might be too comprehensive. Please try again."
-    except Exception as e:
-        return f"❌ Error generating explanation: {str(e)}"
-
-# PDF Summary Mode
-if st.session_state.study_mode == "pdf_summary" and st.session_state.subject.strip():
-    st.markdown(f"### 📄 Upload your **{st.session_state.subject}** PDF")
-    uploaded_file = st.file_uploader("Choose your PDF file", type=["pdf"])
-    
-    if uploaded_file:
-        st.success(f"✅ Great! Your {st.session_state.subject} PDF is loaded successfully!")
-        
-        try:
-            pdf_bytes = uploaded_file.read()
-            reader = PdfReader(BytesIO(pdf_bytes))
-            num_pages = len(reader.pages)
-
-            # Dropdown for page selection
-            page_options = [f"Slide {i}" for i in range(1, num_pages + 1)]
-            selected_option = st.selectbox(
-                "Go to slide:",
-                options=page_options,
-                index=st.session_state.current_page - 1
-            )
-            selected_page = int(selected_option.split()[-1])
-            st.session_state.current_page = selected_page
-
-            # Show PDF and explanation
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader(f"📄 Slide {selected_page}")
-                image = pdf_page_to_image(pdf_bytes, selected_page - 1)
-                if image:
-                    st.image(image, use_container_width=True)
-                else:
-                    st.error("Could not display this page.")
-                    
-                # Navigation buttons
-                nav_col1, nav_col2, nav_col3 = st.columns(3)
-                with nav_col1:
-                    if st.button("⬅️ Previous", disabled=selected_page <= 1):
-                        st.session_state.current_page = max(1, selected_page - 1)
-                        st.rerun()
-                with nav_col2:
-                    st.write(f"Page {selected_page} of {num_pages}")
-                with nav_col3:
-                    if st.button("Next ➡️", disabled=selected_page >= num_pages):
-                        st.session_state.current_page = min(num_pages, selected_page + 1)
-                        st.rerun()
-
-            with col2:
-                st.subheader(f"📝 Easy {st.session_state.subject} Summary")
-                
-                # Auto-generate summary
-                if image:
-                    with st.spinner(f"Creating an easy-to-understand {st.session_state.subject} summary..."):
-                        summary = generate_slide_summary(image, st.session_state.subject)
-                    
-                    # Display summary in styled container
-                    st.markdown(
-                        f"""
-                        <div style="background-color:#f0f8ff;padding:1.5rem;border-radius:15px;border-left:5px solid #4CAF50; color:#2c3e50; font-size:16px; line-height:1.6;">
-                        <div style="font-weight:bold; color:#2c5282; margin-bottom:10px;">📚 {st.session_state.subject} Summary:</div>
-                        {summary.replace(chr(10), '<br>')}
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.error("Cannot generate summary - page could not be loaded.")
-
-            # Progress bar
-            st.markdown("---")
-            progress = selected_page / num_pages
-            st.progress(progress, text=f"Study Progress: {selected_page}/{num_pages} slides ({progress:.1%})")
-            
-        except Exception as e:
-            st.error(f"Error processing PDF: {str(e)}")
-            st.info("Please try uploading your PDF again.")
-
-# Topic Explanation Mode
-elif st.session_state.study_mode == "topic_explanation" and st.session_state.subject.strip():
-    st.markdown(f"### 🧠 Ask About Any **{st.session_state.subject}** Topic")
-    st.markdown(f"Get comprehensive explanations perfect for your college exams!")
-    
-    # Topic input
-    topic_input = st.text_input(
-        f"What {st.session_state.subject} topic would you like me to explain?",
-        placeholder=f"e.g., Photosynthesis, Quantum Mechanics, Machine Learning, Calculus, etc.",
-        help="Enter any topic from your subject and I'll provide a complete explanation with formulas, diagrams descriptions, and exam tips!"
-    )
-    
-    if st.button("🚀 Get Comprehensive Explanation", disabled=not topic_input.strip()):
-        if topic_input.strip():
-            with st.spinner(f"Preparing a comprehensive explanation of '{topic_input}' in {st.session_state.subject}..."):
-                explanation = generate_topic_explanation(st.session_state.subject, topic_input)
-            
-            # Display explanation in styled container
-            st.markdown(
-                f"""
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 3px; border-radius: 20px; margin: 20px 0;">
-                    <div style="background-color: white; padding: 25px; border-radius: 17px; color: #333; font-size: 16px; line-height: 1.8;">
-                        <div style="font-weight: bold; color: #667eea; margin-bottom: 20px; font-size: 24px; text-align: center;">
-                            🎓 Complete Guide: {topic_input} in {st.session_state.subject}
-                        </div>
-                        <div style="color: #444; white-space: pre-line;">
-                            {explanation}
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            
-            # Add follow-up suggestions
-            st.markdown("### 💡 Want to learn more?")
-            st.info(f"Feel free to ask about any other {st.session_state.subject} topics! I can explain concepts, provide formulas, describe diagrams, and give you exam-focused tips.")
-
-# Show motivational tips if a study mode is selected
-if st.session_state.study_mode and st.session_state.subject.strip():
-    motivational_tip = generate_subject_tips(st.session_state.subject)
+    # Pre-wrap ensures newlines are respected without manual <br> tags
     st.markdown(
         f"""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2px; border-radius: 15px; margin: 20px 0;">
-            <div style="background-color: white; padding: 20px; border-radius: 13px; color: #333; font-size: 16px; line-height: 1.7;">
-                <div style="font-weight: bold; color: #667eea; margin-bottom: 15px; font-size: 18px;">
-                    💪 Message from Your {st.session_state.subject} Teacher
-                </div>
-                <div style="font-style: italic; color: #555;">
-                    {motivational_tip}
-                </div>
-            </div>
+        <div class="response-container">
+            {parts[0]}
         </div>
         """,
         unsafe_allow_html=True
     )
+    
+    if len(parts) > 1:
+        for i in range(1, len(parts), 2):
+            image_query = parts[i]
+            text_after = parts[i+1]
+            st.image(f"https://source.unsplash.com/800x400/?{image_query}", caption=f"🖼️ {image_query.capitalize()}")
+            st.markdown(
+                f"""
+                <div class="response-container">
+                    {text_after}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-# Add option to go back to mode selection
-if st.session_state.study_mode:
+# --- UI COMPONENTS ---
+
+def display_pdf_summary_view():
+    """UI for the PDF summarizer mode."""
+    st.markdown(f"### 📄 Upload your **{st.session_state.subject}** PDF")
+    uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
+
+    if uploaded_file:
+        st.session_state.pdf_bytes = uploaded_file.getvalue()
+        reader = PdfReader(BytesIO(st.session_state.pdf_bytes))
+        st.session_state.num_pages = len(reader.pages)
+    
+    if st.session_state.pdf_bytes:
+        st.success(f"✅ PDF loaded with {st.session_state.num_pages} pages.")
+        
+        # Page selection slider is more intuitive for PDFs
+        page_num_selected = st.slider(
+            "Select a page to summarize:", 
+            1, 
+            st.session_state.num_pages, 
+            st.session_state.current_page + 1
+        )
+        st.session_state.current_page = page_num_selected - 1
+
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader(f"📄 Page {st.session_state.current_page + 1} of {st.session_state.num_pages}")
+            image = get_pdf_page_image(st.session_state.pdf_bytes, st.session_state.current_page)
+            if image:
+                st.image(image, use_container_width=True)
+            else:
+                st.error("Could not display this page.")
+        
+        with col2:
+            st.subheader(f"📝 Easy {st.session_state.subject} Summary")
+            if image:
+                with st.spinner(f"AI is summarizing page {st.session_state.current_page + 1}..."):
+                    prompt = get_summary_prompt(st.session_state.subject)
+                    # Pass only the last 2 messages for context to keep it relevant
+                    history_context = st.session_state.chat_history[-2:]
+                    summary = generate_gemini_response(prompt, _image_pil=image, _chat_history=history_context)
+                
+                if summary:
+                    # Update chat history
+                    st.session_state.chat_history.append({"role": "user", "content": f"Summarize page {st.session_state.current_page + 1}"})
+                    st.session_state.chat_history.append({"role": "model", "content": summary})
+                    
+                    st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
+                else:
+                    st.warning("Could not generate summary for this page.")
+
+def display_topic_explanation_view():
+    """UI for the Topic Explainer mode."""
+    st.markdown(f"### 🧠 Ask About Any **{st.session_state.subject}** Topic")
+    st.markdown(f"Get a comprehensive, exam-focused explanation with visual aids.")
+
+    topic_input = st.text_input(
+        f"Enter a {st.session_state.subject} topic:",
+        placeholder="e.g., Photosynthesis, Quantum Mechanics, Machine Learning...",
+    )
+
+    if st.button("🚀 Explain Topic", disabled=not topic_input.strip()):
+        with st.spinner(f"AI is preparing a deep-dive on '{topic_input}'..."):
+            prompt = get_topic_explanation_prompt(st.session_state.subject, topic_input)
+            explanation = generate_gemini_response(prompt)
+        
+        if explanation:
+            # Update chat history
+            st.session_state.chat_history.append({"role": "user", "content": f"Explain: {topic_input}"})
+            st.session_state.chat_history.append({"role": "model", "content": explanation})
+            
+            # This custom function renders the response with images
+            render_response(explanation)
+        else:
+            st.error("Failed to generate an explanation. Please try a different topic or try again.")
+
+
+# --- MAIN APP LOGIC ---
+
+# Call session state init once
+init_session_state()
+
+# Custom CSS for a cleaner look
+st.markdown("""
+<style>
+    /* Main container styling */
+    .stApp {
+        background-color: #f0f2f6;
+    }
+    /* Summary box styling */
+    .summary-box {
+        background-color: #ffffff;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border-left: 5px solid #1E90FF;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        font-size: 16px;
+        line-height: 1.6;
+        white-space: pre-wrap; /* Respects newlines from the model output */
+    }
+    /* Topic explanation container styling */
+    .response-container {
+        background-color: #ffffff;
+        padding: 1rem 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 1rem; /* Space between text blocks */
+        font-size: 17px;
+        line-height: 1.7;
+        color: #333;
+        white-space: pre-wrap; /* This is safer than replacing \n with <br> */
+    }
+    /* Add some space for the image caption */
+    .stImage > figcaption {
+        margin-top: 8px;
+        text-align: center;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🎓 Study Assistant")
+st.markdown("Your personal AI tutor for PDF summaries and deep topic explanations.")
+
+st.markdown("---")
+
+# --- Step 1: Subject Selection ---
+st.markdown("### 📖 Step 1: What are you studying?")
+subject_input = st.text_input(
+    "Enter a subject to tailor the AI's expertise:",
+    placeholder="e.g., Biology, Computer Science, Economics...",
+    value=st.session_state.subject,
+    help="Providing a subject helps the AI give you more accurate and relevant answers."
+)
+
+if subject_input != st.session_state.subject:
+    st.session_state.subject = subject_input
+    # Reset downstream state if subject changes
+    st.session_state.study_mode = ""
+    st.session_state.chat_history = []
+    st.rerun()
+
+# --- Step 2: Study Mode Selection ---
+if st.session_state.subject.strip():
+    st.markdown(f"### 🎯 Step 2: How do you want to study **{st.session_state.subject}**?")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📄 Summarize my PDF", use_container_width=True, type="primary" if st.session_state.study_mode != "topic_explanation" else "secondary"):
+            st.session_state.study_mode = "pdf_summary"
+            st.rerun()
+    with col2:
+        if st.button("🧠 Explain a Topic", use_container_width=True, type="primary" if st.session_state.study_mode == "topic_explanation" else "secondary"):
+            st.session_state.study_mode = "topic_explanation"
+            st.rerun()
+            
     st.markdown("---")
-    if st.button("🔄 Choose Different Study Mode"):
-        st.session_state.study_mode = ""
-        st.rerun()
 
-# Footer
+    # --- Step 3: Main Interaction ---
+    if st.session_state.study_mode == "pdf_summary":
+        display_pdf_summary_view()
+    elif st.session_state.study_mode == "topic_explanation":
+        display_topic_explanation_view()
+
+# --- FOOTER ---
 st.markdown("---")
 st.markdown(
     """
-    <div style="text-align: center; color: #666; font-size: 14px;">
-        <p>📚 Study Assistant - Making learning easy and fun! 🎓</p>
-        <p><small>Choose between PDF summaries or comprehensive topic explanations for your college exam preparation.</small></p>
+    <div style="text-align: center; color: #555; font-size: 14px;">
+        <p><b>Study Assistant AI</b> | Built with Gemini & Streamlit</p>
+        <p><small>Making exam preparation simpler and more effective.</small></p>
     </div>
     """,
     unsafe_allow_html=True
