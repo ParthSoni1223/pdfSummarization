@@ -5,8 +5,6 @@ from io import BytesIO
 from dotenv import load_dotenv
 
 import streamlit as st
-from streamlit import runtime
-from streamlit.runtime.scriptrunner import get_script_run_ctx
 from PyPDF2 import PdfReader
 import fitz  # PyMuPDF
 from PIL import Image
@@ -15,16 +13,13 @@ from PIL import Image
 # ENV & CONFIG
 # -----------------------------
 
-# Load environment variables
 load_dotenv()
 
-# Get Gemini API Key from secrets (Streamlit Cloud compatible)
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     st.error("🔑 GEMINI_API_KEY not found in secrets. Please add it to `secrets.toml` or Streamlit Cloud.")
     st.stop()
 
-# Set page config
 st.set_page_config(
     layout="wide",
     page_title="📚 Study Assistant",
@@ -36,9 +31,8 @@ st.set_page_config(
 # THEME & STYLING
 # -----------------------------
 
-# Initialize theme in session state
 if "theme" not in st.session_state:
-    st.session_state.theme = "light"  # default
+    st.session_state.theme = "light"
 
 def get_theme_colors():
     if st.session_state.theme == "dark":
@@ -62,7 +56,6 @@ def get_theme_colors():
             "border": "#DDDDDD"
         }
 
-# Inject custom CSS with dynamic theme
 def inject_theme_css():
     colors = get_theme_colors()
     st.markdown(
@@ -90,7 +83,6 @@ def inject_theme_css():
             .stMarkdown, .stText {{ color: {colors['text']}; }}
             .stSpinner > div > div {{ border-top-color: {colors['accent']} !important; }}
             hr {{ border-color: {colors['border']}; }}
-            .sidebar .sidebar-content {{ background-color: {colors['bg']}; }}
             code {{ background-color: {colors['card_bg']}; color: {colors['accent']}; }}
         </style>
         """,
@@ -117,7 +109,6 @@ if "study_mode" not in st.session_state:
 # -----------------------------
 
 def pdf_page_to_image(pdf_bytes, page_number):
-    """Convert PDF page to PIL Image."""
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc.load_page(page_number)
@@ -129,45 +120,43 @@ def pdf_page_to_image(pdf_bytes, page_number):
         st.error(f"❌ Error converting PDF page: {str(e)}")
         return None
 
+def clean_response(text):
+    """Remove unwanted HTML tags and fix formatting issues."""
+    text = text.replace("</div>", "").replace("<div>", "").replace("<p>", "").replace("</p>", "")
+    text = text.replace("```html", "").replace("```", "")
+    return text.strip()
+
 def generate_summary_prompt(subject):
-    return f"""You are an experienced, excellent and great {subject} teacher who is loved by all students because you make {subject} incredibly easy to understand. You have a special talent for creating clear, simple summaries that help students grasp even the most complex {subject} concepts.
+    return f"""You are an excellent {subject} teacher who explains complex ideas simply. Summarize this {subject} slide clearly and concisely.
 
-Your teaching approach:
-- Explain {subject} concepts in the simplest possible language
-- Break down complex terms into easy-to-understand explanations
-- Use simple examples and analogies related to {subject}
-- Highlight key points students must remember
-- Write in a friendly, encouraging tone
+Focus on:
+- Main concept in simple language
+- Key terms explained
+- Important points to remember
+- Real-life examples if helpful
 
-Task: Provide an easy-to-understand summary of this {subject} slide/page. Focus on:
-1. Main concept in simple language
-2. Break down difficult terms
-3. Key points to remember
-4. Simple examples if helpful
-
-Keep it concise, clear, and exam-friendly. Start directly with the summary."""
+Keep it friendly, exam-focused, and easy to understand. Start directly with the summary."""
 
 def generate_topic_explanation_prompt(subject, topic):
     return f"""You are a world-renowned {subject} professor. Explain the topic: "{topic}" in {subject} for a college student preparing for exams.
 
-Provide a comprehensive explanation covering:
+Cover:
 1. Definition & Importance
-2. Key Concepts & Components
-3. Formulas (if applicable)
-4. Step-by-Step Processes
-5. 2-3 Practical Examples
+2. Key Concepts
+3. Formulas (if any)
+4. Step-by-Step Process
+5. 2 Practical Examples
 6. Common Mistakes & Tips
 7. Exam Focus Points
 
-Additionally, if there are important diagrams, charts, or visual representations related to this topic:
-- Describe them clearly (e.g., 'a diagram showing X vs Y')
-- Explain what they represent
-- Suggest what the student should draw or visualize
+Additionally, if this topic has important diagrams, graphs, or visuals:
+- Describe what they show (e.g., 'A graph of supply vs demand')
+- Suggest a Google image search term for the student to find it
+- Format it as:
+  🖼️ VISUAL: [description]
+  🔍 Search: [exact search term]
 
-If visuals are relevant, also suggest a Google search query like:
-🔍 VISUAL: [search term for image]
-
-Make your explanation so clear and complete that the student feels confident for their exam. Start directly with the explanation."""
+Do not use markdown. Do not include ``` or HTML. Start directly with the explanation."""
 
 def generate_subject_tips(subject):
     tips = {
@@ -213,6 +202,7 @@ def generate_slide_summary(image_pil, subject):
 
         if response.status_code == 200:
             reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+            reply = clean_response(reply)
             st.session_state.chat_history.append({"role": "model", "content": reply})
             return reply
         else:
@@ -238,6 +228,7 @@ def generate_topic_explanation(subject, topic):
 
         if response.status_code == 200:
             reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+            reply = clean_response(reply)
             st.session_state.chat_history.append({"role": "user", "content": f"Explain topic: {topic} in {subject}"})
             st.session_state.chat_history.append({"role": "model", "content": reply})
             return reply
@@ -332,7 +323,6 @@ if st.session_state.study_mode == "pdf_summary" and st.session_state.subject.str
                 else:
                     st.error("Could not render this page.")
 
-                # Navigation
                 nav1, nav2, nav3 = st.columns([1, 2, 1])
                 with nav1:
                     if st.button("⬅️ Previous", disabled=(page_num <= 1)):
@@ -371,7 +361,6 @@ if st.session_state.study_mode == "pdf_summary" and st.session_state.subject.str
                 else:
                     st.error("Cannot generate summary — image not available.")
 
-            # Progress bar
             st.markdown("---")
             progress = page_num / num_pages
             st.progress(progress, text=f"Progress: {int(progress*100)}%")
@@ -398,6 +387,19 @@ elif st.session_state.study_mode == "topic_explanation" and st.session_state.sub
             explanation = generate_topic_explanation(st.session_state.subject, topic_input)
 
         colors = get_theme_colors()
+        # Split explanation into content and visuals
+        lines = explanation.splitlines()
+        content_lines = []
+        visual_suggestions = []
+
+        for line in lines:
+            if line.startswith("🖼️ VISUAL:") or line.startswith("🔍 Search:"):
+                visual_suggestions.append(line)
+            else:
+                content_lines.append(line)
+
+        full_content = "<br>".join(content_lines)
+
         st.markdown(
             f"""
             <div style="
@@ -416,13 +418,20 @@ elif st.session_state.study_mode == "topic_explanation" and st.session_state.sub
                 ">
                     <h3 style="color: {colors['accent']}; text-align: center;">🎓 {topic_input} in {st.session_state.subject}</h3>
                     <div style="white-space: pre-line; color: {colors['text']};">
-                        {explanation.replace('🔍 VISUAL:', '<br><br><strong>🖼️ Suggested Visual:</strong>')}
+                        {full_content}
                     </div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True
         )
+
+        # Display visual suggestions as real image placeholders
+        for i, line in enumerate(visual_suggestions):
+            if "🔍 Search:" in line:
+                search_term = line.replace("🔍 Search:", "").strip()
+                st.markdown(f"### 🖼️ Visual: {search_term}")
+                st.image(f"https://source.unsplash.com/random/600x300/?{search_term}", caption=f"Search: {search_term}", use_column_width=True)
 
         st.markdown("### 💡 Want to learn more?")
         st.info(f"Ask about another {st.session_state.subject} topic — I’ll break it down with clarity and visuals!")
